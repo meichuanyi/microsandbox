@@ -34,7 +34,7 @@ Run a command through the sandbox's configured shell (defaults to `/bin/sh`). Us
 
 <CodeGroup>
 ```rust Rust
-let output = sb.shell("ls -la /app && echo done", ()).await?;
+let output = sb.shell("ls -la /app && echo done").await?;
 println!("{}", output.stdout()?);
 ```
 
@@ -96,13 +96,12 @@ Use `exec_stream` to receive stdout, stderr, and exit events as they happen inst
 
 <CodeGroup>
 ```rust Rust
-use futures::StreamExt;
 use microsandbox::exec::ExecEvent;
 
-let mut handle = sb.exec_stream("tail", |e| e.args(["-f", "/var/log/app.log"])).await?;
+let mut handle = sb.exec_stream("tail", ["-f", "/var/log/app.log"]).await?;
 
-while let Some(event) = handle.events().next().await {
-    match event? {
+while let Some(event) = handle.recv().await {
+    match event {
         ExecEvent::Stdout(data) => print!("{}", String::from_utf8_lossy(&data)),
         ExecEvent::Stderr(data) => eprint!("{}", String::from_utf8_lossy(&data)),
         ExecEvent::Exited { code } => break,
@@ -175,7 +174,7 @@ Bridge your terminal to a fully interactive PTY session inside the sandbox. Pres
 <CodeGroup>
 ```rust Rust
 // Attach to the default shell
-let exit_code = sb.attach((), ()).await?;
+let exit_code = sb.attach_shell().await?;
 
 // Attach to a specific command with options
 let exit_code = sb.attach("python", |a| a
@@ -209,7 +208,7 @@ List background processes and reattach to them by session ID.
 <CodeGroup>
 ```rust Rust
 // Start a background process and capture its session ID
-let handle = sb.exec_stream("python", |e| e.args(["server.py"])).await?;
+let handle = sb.exec_stream("python", ["server.py"]).await?;
 let session_id = handle.id().to_string();
 
 // List active sessions
