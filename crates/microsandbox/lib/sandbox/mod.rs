@@ -895,12 +895,8 @@ fn build_exec_request(
     rows: u16,
     cols: u16,
 ) -> ExecRequest {
-    let mut env: Vec<String> = config
-        .env
-        .iter()
-        .chain(env.iter())
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let merged = config::merge_env_pairs(&config.env, env);
+    let mut env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
     // Inject TERM for TTY sessions if not already set.
     if tty && !env.iter().any(|e| e.starts_with("TERM=")) {
@@ -921,7 +917,7 @@ fn build_exec_request(
         args,
         env,
         cwd: cwd.or_else(|| config.workdir.clone()),
-        user,
+        user: user.or_else(|| config.user.clone()),
         tty,
         rows,
         cols,
@@ -1220,8 +1216,10 @@ pub(super) fn pid_is_alive(pid: i32) -> bool {
 ///
 /// Auth resolution:
 /// 1. Explicit `RegistryAuth` from `SandboxBuilder::registry_auth()` (if provided)
-/// 2. Global config `registries.auth` matched by registry hostname
-/// 3. Anonymous fallback
+/// 2. OS keyring / credential store
+/// 3. Global config `registries.auth` matched by registry hostname
+/// 4. Docker credential store/config fallback
+/// 5. Anonymous fallback
 ///
 /// When `progress` is `Some`, uses `pull_with_sender()` to emit per-layer
 /// progress events. The caller must consume the corresponding `PullProgressHandle`.
