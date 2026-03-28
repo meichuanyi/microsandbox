@@ -3,8 +3,8 @@
   "theme": "almond",
   "name": "microsandbox",
   "logo": {
-    "light": "/images/microsandbox-banner-light(2).svg",
-    "dark": "/images/microsandbox-banner-dark.svg",
+    "light": "/logo/dark.svg",
+    "dark": "/logo/dark.svg",
     "href": "https://microsandbox.dev"
   },
   "favicon": "/logo/light.svg",
