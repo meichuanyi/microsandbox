@@ -120,5 +120,13 @@
   "appearance": {
     "default": "system"
   },
-  "description": "Every agent deserves its own machine"
+  "description": "Every agent deserves its own machine",
+  "footer": {
+    "socials": {
+      "github": "https://github.com/zerocore-ai/microsandbox",
+      "discord": "https://discord.gg/NQMWDfp7",
+      "linkedin": "https://www.linkedin.com/company/super-rad-company",
+      "x": "https://x.com/microsandbox"
+    }
+  }
 }
