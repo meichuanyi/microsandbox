@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "almond",
+  "theme": "luma",
   "name": "microsandbox",
   "logo": {
     "light": "/images/microsandbox-banner-light.svg",
@@ -9,9 +9,9 @@
   },
   "favicon": "/logo/light.svg",
   "colors": {
-    "primary": "#e11d48",
-    "light": "#e11d48",
-    "dark": "#e11d48"
+    "primary": "#f52b57",
+    "light": "#f52b57",
+    "dark": "#f52b57"
   },
   "navbar": {
     "primary": {
@@ -137,8 +137,5 @@
   },
   "appearance": {
     "default": "system"
-  },
-  "background": {
-    "decoration": "windows"
   }
 }
