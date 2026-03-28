@@ -1,6 +1,6 @@
 ---
-title: Introduction
-description: Every agent deserves its own computer
+title: "Introduction"
+description: "Every agent deserves its own computer"
 icon: "house"
 ---
 
@@ -9,6 +9,7 @@ AI agents run with whatever privileges you give them, and most of the time that'
 microsandbox takes a different approach: every sandbox is a real microVM with its own Linux kernel. But isolation alone isn't the interesting part. What matters is that the networking, filesystem, and secrets are all **programmable from the host side**, so instead of just walling off an agent, you actually get to see and control what it does.
 
 <CodeGroup>
+
 ```rust Rust
 use microsandbox::{Sandbox, NetworkPolicy};
 
@@ -59,6 +60,7 @@ sb = await Sandbox.create(
     network=NetworkPolicy.public_only(),
 )
 ```
+
 </CodeGroup>
 
 <Callout icon="bolt" color="#7C3AED">
@@ -76,6 +78,7 @@ Instead of injecting real credentials into the sandbox, microsandbox generates r
 So even with full code execution inside the sandbox, there's nothing to exfiltrate. The credential was never there. DNS rebinding protection and cloud metadata blocking kick in automatically when secrets are configured, closing the remaining side channels.
 
 <CodeGroup>
+
 ```rust Rust
 let sb = Sandbox::builder("sandbox")
     .image("python:3.12")
@@ -106,6 +109,7 @@ sb = await Sandbox.create(
     ],
 )
 ```
+
 </CodeGroup>
 
 ### Programmable network layer
@@ -115,6 +119,7 @@ Every packet leaving a sandbox passes through a networking stack controlled enti
 There's no underlying host network to bridge to, no rules to circumvent, and no way for the guest to reach around the filter.
 
 <CodeGroup>
+
 ```rust Rust
 let sb = Sandbox::builder("sandbox")
     .image("python:3.12")
@@ -140,6 +145,7 @@ sb = await Sandbox.create(
     network=NetworkPolicy.allowlist(["api.openai.com", "pypi.org"]),
 )
 ```
+
 </CodeGroup>
 
 ### Extensible filesystem backends
@@ -147,6 +153,7 @@ sb = await Sandbox.create(
 The host controls what the guest sees at the filesystem level. Mount host directories, use managed volumes, or attach custom filesystem backends entirely. Hooks let you intercept reads and writes to do things like encrypt everything going to disk or proxy to remote storage, and the guest never knows the difference.
 
 <CodeGroup>
+
 ```rust Rust
 let sb = Sandbox::builder("encrypted")
     .image("python:3.12")
@@ -186,6 +193,7 @@ sb = await Sandbox.create(
     },
 )
 ```
+
 </CodeGroup>
 
 ### Snapshot, fork, restore <sup>coming soon</sup>
@@ -193,6 +201,7 @@ sb = await Sandbox.create(
 Take a snapshot of a running sandbox (full VM state, memory, filesystem, everything) and fork hundreds of identical copies from that single baseline. Install dependencies once, snapshot, then spin up workers that skip the entire setup phase. Each fork gets its own copy-on-write filesystem and can override memory, CPUs, or environment variables.
 
 <CodeGroup>
+
 ```rust Rust
 let sb = Sandbox::builder("base")
     .image("python:3.12")
@@ -230,7 +239,10 @@ snapshot = await sb.snapshot()
 # Fork 10 workers (skips pip install entirely)
 workers = await asyncio.gather(*(snapshot.restore(f"worker-{i}") for i in range(10)))
 ```
+
 </CodeGroup>
+
+/
 
 ### Spawn sandboxes from sandboxes
 
@@ -245,6 +257,7 @@ Extend microsandbox with in-process Rust plugins or out-of-process plugins in an
 Guest processes can emit typed events to the host, and the host can send events back. No special libraries required in the guest since any language can write JSON to a socket. This enables structured communication beyond stdin/stdout, like progress reporting, task completion signals, or custom RPC.
 
 <CodeGroup>
+
 ```rust Rust
 // Receive events from guest
 let _sub = sb.on_event("task.progress", |event: EventData| {
@@ -283,6 +296,7 @@ await sb.emit("task.start", {
     "output_dir": "/data/output",
 })
 ```
+
 </CodeGroup>
 
 ## The basics
@@ -300,12 +314,15 @@ await sb.emit("task.start", {
   <Card title="Quickstart" icon="bolt" href="/quickstart">
     Get a sandbox running in under 5 minutes
   </Card>
+
   <Card title="Sandbox overview" icon="box" href="/sandboxes/overview">
     Configuration, rootfs sources, and lifecycle
   </Card>
+
   <Card title="CLI reference" icon="square-terminal" href="/cli/overview">
     Manage sandboxes from the terminal
   </Card>
+
   <Card title="SDK reference" icon="code" href="/sdk/rust">
     Full API documentation for all SDKs
   </Card>
