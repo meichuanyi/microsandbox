@@ -119,5 +119,6 @@
   },
   "appearance": {
     "default": "system"
-  }
+  },
+  "description": "Every agent deserves its own machine"
 }
