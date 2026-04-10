@@ -1,0 +1,40 @@
+---
+title: Snapshots
+description: Fork-based scaling and state preservation
+icon: "code-branch"
+---
+
+Snapshots capture the full VM state: memory, CPU registers, filesystem, everything. From a single snapshot you can fork hundreds of sandboxes, each starting exactly where the original left off with no re-boot or dependency reinstall. Forks are cheap because each one gets its own copy-on-write filesystem.
+
+Particularly useful for agent workloads where every sandbox needs the same base environment (Python + packages, Node + node_modules, etc). Install once, snapshot, fork on demand.
+
+## Basic example
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Sandbox;
+
+let sb = Sandbox::builder("base")
+    .image("python")
+    .create()
+    .await?;
+
+sb.exec("pip", ["install", "-r", "requirements.txt"]).await?;
+
+let snapshot = sb.snapshot().await?;
+sb.resume().await?;
+```
+
+```typescript TypeScript
+import { Sandbox } from 'microsandbox'
+
+const sb = await Sandbox.create({ name: "base", image: "python" })
+await sb.exec("pip", ["install", "-r", "requirements.txt"])
+
+const snapshot = await sb.snapshot()
+await sb.resume()
+```
+
+</CodeGroup>
+
+See the [SDK Reference](/sdk/snapshots) for the full API.

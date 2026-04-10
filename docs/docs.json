@@ -48,7 +48,17 @@
               "sandboxes/commands",
               "sandboxes/filesystem",
               "sandboxes/volumes",
-              "sandboxes/networking"
+              "sandboxes/secrets",
+              "sandboxes/snapshots",
+              "sandboxes/events"
+            ]
+          },
+          {
+            "group": "Networking",
+            "icon": "network-wired",
+            "pages": [
+              "networking/overview",
+              "networking/tls"
             ]
           },
           {
@@ -82,11 +92,18 @@
             ]
           },
           {
+            "group": "Networking & Security",
+            "icon": "shield",
+            "pages": [
+              "sdk/networking",
+              "sdk/secrets"
+            ]
+          },
+          {
             "group": "Features",
             "icon": "puzzle-piece",
             "pages": [
               "sdk/snapshots",
-              "sdk/networking",
               "sdk/events"
             ]
           },

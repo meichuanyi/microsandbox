@@ -51,6 +51,67 @@ const sb3 = await Sandbox.create({
 
 </CodeGroup>
 
+## Custom policies
+
+Build a policy with explicit egress and ingress rules. Rules are evaluated first-match-wins.
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Sandbox;
+use microsandbox::NetworkPolicy;
+use microsandbox_network::policy::{
+    Action, Destination, DestinationGroup, Direction, PortRange, Protocol, Rule,
+};
+
+let policy = NetworkPolicy {
+    default_action: Action::Deny,
+    rules: vec![
+        Rule {
+            direction: Direction::Outbound,
+            destination: Destination::Any,
+            protocol: Some(Protocol::Tcp),
+            ports: Some(PortRange::single(443)),
+            action: Action::Allow,
+        },
+        Rule {
+            direction: Direction::Outbound,
+            destination: Destination::Any,
+            protocol: Some(Protocol::Udp),
+            ports: Some(PortRange::single(53)),
+            action: Action::Allow,
+        },
+        Rule::deny_outbound(Destination::Group(DestinationGroup::Metadata)),
+        Rule::deny_outbound(Destination::Group(DestinationGroup::Private)),
+    ],
+};
+
+let sb = Sandbox::builder("secure-agent")
+    .image("alpine")
+    .network(|n| n.policy(policy))
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+import { Sandbox } from 'microsandbox'
+
+const sb = await Sandbox.create({
+    name: "secure-agent",
+    image: "alpine",
+    network: {
+        rules: [
+            { action: "allow", direction: "outbound", protocol: "tcp", port: "443" },
+            { action: "allow", direction: "outbound", protocol: "udp", port: "53" },
+            { action: "deny", direction: "outbound", destination: "metadata" },
+            { action: "deny", direction: "outbound", destination: "private" },
+        ],
+        defaultAction: "deny",
+    },
+})
+```
+
+</CodeGroup>
+
 ## Port mapping
 
 Expose ports from the sandbox to the host so services running inside the VM are accessible from your machine.

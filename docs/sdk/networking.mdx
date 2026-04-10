@@ -1,10 +1,10 @@
 ---
 title: Networking
-description: Network policies, secrets, and TLS interception
+description: Network policy and TLS API reference
 icon: "network-wired"
 ---
 
-All sandbox network traffic passes through a host-controlled networking stack where policies are enforced at the packet level. There's no underlying host network to bypass. See [Networking concepts](/sandboxes/networking) for more on how this works.
+For conceptual overview, see [Networking](/networking/overview). For TLS interception details, see [TLS Interception](/networking/tls).
 
 ## Preset policies
 
@@ -191,99 +191,6 @@ const sb = await Sandbox.create({
 
 </CodeGroup>
 
-## Secrets
+See [Secrets](/sandboxes/secrets) for secret injection configuration.
 
-Secrets use a **placeholder substitution** model. The guest VM never sees the real credential.
-
-When you bind a secret to an environment variable and one or more allowed hosts, microsandbox generates a random placeholder (e.g., `OPENAI_API_KEY=msb_ph_a8f3c2...`) and injects that into the guest instead. The real value never enters the VM. The only way it reaches the outside world is when a request goes to an allowed host, at which point microsandbox swaps the placeholder for the real value. Everywhere else, the placeholder is just a meaningless string.
-
-So even with full code execution inside the sandbox, there's nothing to steal. The credential was never there.
-
-<CodeGroup>
-```rust Rust
-use microsandbox::Sandbox;
-
-let sb = Sandbox::builder("agent")
-    .image("python")
-    .secret(|s| s
-        .env("GITHUB_TOKEN")
-        .value(std::env::var("GITHUB_TOKEN")?)
-        .allow_host("api.github.com")
-        .allow_host_pattern("*.githubusercontent.com")
-    )
-    .secret_env("OPENAI_API_KEY", api_key, "api.openai.com")
-    .create()
-    .await?;
-```
-
-```typescript TypeScript
-import { Sandbox, Secret } from 'microsandbox'
-
-const sb = await Sandbox.create({
-    name: "agent",
-    image: "python",
-    secrets: [
-        Secret.env("GITHUB_TOKEN", {
-            value: process.env.GITHUB_TOKEN!,
-            allowHosts: ["api.github.com"],
-            allowHostPatterns: ["*.githubusercontent.com"],
-        }),
-        Secret.env("OPENAI_API_KEY", {
-            value: process.env.OPENAI_API_KEY!,
-            allowHosts: ["api.openai.com"],
-        }),
-    ],
-})
-```
-
-</CodeGroup>
-
-## TLS interception
-
-Enable HTTPS traffic inspection with an auto-generated CA certificate. microsandbox generates a per-sandbox CA during creation, installs it in the guest's trust store, and generates per-domain certificates on first connection. Domains that use certificate pinning (or that you don't want to intercept) can be bypassed.
-
-<CodeGroup>
-```rust Rust
-use microsandbox::Sandbox;
-
-let sb = Sandbox::builder("agent")
-    .image("python")
-    .network(|n| n
-        .tls(|t| t
-            .bypass("pinned-api.example.com")
-            .bypass("*.gov")
-        )
-    )
-    .create()
-    .await?;
-```
-
-```typescript TypeScript
-import { Sandbox } from 'microsandbox'
-
-const sb = await Sandbox.create({
-    name: "agent",
-    image: "python",
-    network: {
-        tls: {
-            bypass: ["pinned-api.example.com", "*.gov"],
-        },
-    },
-})
-```
-
-</CodeGroup>
-
-## Protocol support
-
-For most sandboxed workloads, networking behaves the way you'd expect:
-
-- Normal outbound **TCP** and **UDP** traffic works, including common tools and libraries like `curl`, `wget`, package managers, HTTP clients, database drivers, and DNS lookups.
-- **DNS** is intercepted on the host side, which is what enables domain blocking, rebinding protection, and secret-aware policy checks.
-- **ICMP echo** is supported: Pinging external hosts works on systems that support unprivileged ICMP echo sockets.
-
-<Note>
-**Raw sockets** and **full ICMP forwarding** are not supported because they require elevated privileges on the host. Tools that depend on richer ICMP behavior, such as `traceroute`, are outside the current scope.
-</Note>
-
-In practice, web requests, APIs, package installs, service-to-service calls, and published ports are the primary use case, and those work independently of these ICMP caveats.
+See [TLS Interception](/networking/tls) for TLS proxy configuration and CA management.
