@@ -37,4 +37,107 @@ await sb.resume()
 
 </CodeGroup>
 
-See the [SDK Reference](/sdk/snapshots) for the full API.
+## Save and load named snapshots
+
+Persist a snapshot under a name so it survives beyond the lifetime of the original sandbox. Load it later to fork workers without keeping the base sandbox around.
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Snapshot;
+
+// Save
+let snapshot = sb.snapshot().await?;
+snapshot.save_named("after-pip-install").await?;
+
+// Load by name
+let saved = Snapshot::get("after-pip-install").await?;
+```
+
+```typescript TypeScript
+import { Snapshot } from 'microsandbox'
+
+// Save
+const snapshot = await sb.snapshot()
+await snapshot.saveNamed("after-pip-install")
+
+// Load by name
+const saved = await Snapshot.get("after-pip-install")
+```
+
+</CodeGroup>
+
+## Fork workers
+
+Restore multiple sandboxes from a single snapshot. Each fork skips the entire setup phase and starts running immediately from the captured state.
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Snapshot;
+
+let saved = Snapshot::get("after-pip-install").await?;
+
+let workers: Vec<Sandbox> = futures::future::try_join_all(
+    (0..10).map(|i| saved.restore(format!("worker-{i}")))
+).await?;
+```
+
+```typescript TypeScript
+import { Snapshot } from 'microsandbox'
+
+const saved = await Snapshot.get("after-pip-install")
+
+const workers = await Promise.all(
+    Array.from({ length: 10 }, (_, i) => saved.restore(`worker-${i}`))
+)
+```
+
+</CodeGroup>
+
+## Restore with overrides
+
+Override memory, CPU count, or environment variables when restoring. The VM state is restored from the snapshot, but the overridden configuration takes effect on the new sandbox.
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Snapshot;
+
+let saved = Snapshot::get("after-pip-install").await?;
+
+let custom = saved.restore_with("custom", |r| r
+    .memory(1024)
+    .cpus(4)
+    .env("WORKER_ID", "42")
+).await?;
+```
+
+```typescript TypeScript
+import { Snapshot } from 'microsandbox'
+
+const saved = await Snapshot.get("after-pip-install")
+
+const custom = await saved.restore("custom", {
+    memoryMib: 1024,
+    cpus: 4,
+})
+```
+
+</CodeGroup>
+
+## List and delete snapshots
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Snapshot;
+
+let snapshots = Snapshot::list().await?;
+Snapshot::delete("old-snapshot").await?;
+```
+
+```typescript TypeScript
+import { Snapshot } from 'microsandbox'
+
+const snapshots = await Snapshot.list()
+await Snapshot.delete("old-snapshot")
+```
+
+</CodeGroup>

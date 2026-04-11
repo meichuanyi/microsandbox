@@ -42,4 +42,48 @@ const sub = sb.onEvent("task.progress", (event: EventData) => {
 
 </CodeGroup>
 
-See the [SDK Reference](/sdk/events) for the full API.
+## Send events to guest
+
+Emit a named event with typed data into the guest. Any process listening on the agent socket receives it.
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Sandbox;
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct TaskConfig { input_file: String, output_dir: String }
+
+sb.emit("task.start", TaskConfig {
+    input_file: "/data/input.txt".into(),
+    output_dir: "/data/output".into(),
+}).await?;
+```
+
+```typescript TypeScript
+await sb.emit("task.start", {
+    inputFile: "/data/input.txt",
+    options: ["--verbose"],
+})
+```
+
+</CodeGroup>
+
+## Guest-side emitting
+
+Inside the guest, any process can emit events by writing JSON to the Unix domain socket at `/run/agent.sock`. No SDK required.
+
+```python
+# Inside the guest, plain Python, no SDK
+import json, socket
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect("/run/agent.sock")
+sock.sendall(json.dumps({
+    "event": "task.progress",
+    "data": {"percent": 50, "message": "Halfway done"},
+}).encode() + b"\n")
+sock.close()
+```
+
+The host subscription registered with `on_event("task.progress", ...)` receives this message automatically.
