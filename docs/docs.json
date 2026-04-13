@@ -28,8 +28,9 @@
             "group": "Getting Started",
             "icon": "rocket",
             "pages": [
-              "introduction",
-              "quickstart"
+              "getting-started/introduction",
+              "getting-started/quickstart",
+              "getting-started/agents"
             ]
           },
           {
