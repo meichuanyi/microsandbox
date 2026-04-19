@@ -2,6 +2,7 @@
 
 use crate::config::AgentdConfig;
 use crate::error::AgentdResult;
+use crate::{network, rlimit, tls};
 
 //--------------------------------------------------------------------------------------------------
 // Functions
@@ -9,10 +10,12 @@ use crate::error::AgentdResult;
 
 /// Performs synchronous PID 1 initialization.
 ///
-/// Mounts essential filesystems, applies directory mounts, file mounts, and
-/// tmpfs mounts from the parsed config. Configures networking and prepares
-/// runtime directories.
+/// Applies sandbox-wide resource limits first so every later guest process
+/// inherits the raised baseline, then mounts filesystems, applies directory
+/// mounts, file mounts, and tmpfs mounts from the parsed config. Configures
+/// networking and prepares runtime directories.
 pub fn init(config: &AgentdConfig) -> AgentdResult<()> {
+    rlimit::apply_baseline(&config.rlimits)?;
     linux::mount_filesystems()?;
     linux::mount_runtime()?;
     if let Some(spec) = &config.block_root {
@@ -20,11 +23,11 @@ pub fn init(config: &AgentdConfig) -> AgentdResult<()> {
     }
     linux::apply_dir_mounts(&config.dir_mounts)?;
     linux::apply_file_mounts(&config.file_mounts)?;
-    crate::network::apply_hostname(config.hostname.as_deref())?;
+    network::apply_hostname(config.hostname.as_deref())?;
     linux::apply_tmpfs_mounts(&config.tmpfs)?;
     linux::ensure_standard_tmp_permissions()?;
-    crate::network::apply_network_config(config.network())?;
-    crate::tls::install_ca_cert()?;
+    network::apply_network_config(config.network())?;
+    tls::install_ca_cert()?;
     linux::ensure_scripts_path_in_profile()?;
     linux::create_run_dir()?;
     Ok(())
@@ -52,16 +55,13 @@ fn ensure_scripts_profile_block(profile: &str) -> String {
 //--------------------------------------------------------------------------------------------------
 
 mod linux {
-    use std::{
-        os::unix::fs::{PermissionsExt, symlink},
-        path::Path,
-    };
+    use std::fs;
+    use std::os::unix::fs::{self as unix_fs, PermissionsExt};
+    use std::path::Path;
 
-    use nix::{
-        mount::{MntFlags, MsFlags, mount, umount2},
-        sys::stat::Mode,
-        unistd::{chdir, chroot, mkdir},
-    };
+    use nix::mount::{self, MntFlags, MsFlags};
+    use nix::sys::stat::Mode;
+    use nix::unistd;
 
     use crate::config::{BlockRootSpec, DirMountSpec, FileMountSpec, TmpfsSpec};
     use crate::error::{AgentdError, AgentdResult};
@@ -135,7 +135,7 @@ mod linux {
 
         // /dev/fd → /proc/self/fd
         if !Path::new("/dev/fd").exists() {
-            symlink("/proc/self/fd", "/dev/fd")
+            unix_fs::symlink("/proc/self/fd", "/dev/fd")
                 .map_err(|e| AgentdError::Init(format!("failed to symlink /dev/fd: {e}")))?;
         }
 
@@ -182,7 +182,7 @@ mod linux {
     /// Mount a single disk image at /newroot.
     fn mount_disk_image(device: &str, fstype: Option<&str>) -> AgentdResult<()> {
         if let Some(fstype) = fstype {
-            mount(
+            mount::mount(
                 Some(device),
                 "/newroot",
                 Some(fstype),
@@ -210,7 +210,7 @@ mod linux {
         let lower_dir = "/.msb/rootfs/lower";
         mkdir_ignore_exists("/.msb/rootfs")?;
         mkdir_ignore_exists("/.msb/rootfs/lower")?;
-        mount(
+        mount::mount(
             Some(lower_device),
             lower_dir,
             Some("erofs"),
@@ -222,7 +222,7 @@ mod linux {
         // Mount the writable upper device.
         let upperfs_dir = "/.msb/rootfs/upperfs";
         mkdir_ignore_exists("/.msb/rootfs/upperfs")?;
-        mount(
+        mount::mount(
             Some(upper_device),
             upperfs_dir,
             Some(upper_fstype),
@@ -234,15 +234,15 @@ mod linux {
         // Create upper and work subdirs on the writable device.
         let upper_dir = format!("{upperfs_dir}/upper");
         let work_dir = format!("{upperfs_dir}/work");
-        std::fs::create_dir_all(&upper_dir)
+        fs::create_dir_all(&upper_dir)
             .map_err(|e| AgentdError::Init(format!("mkdir {upper_dir}: {e}")))?;
-        std::fs::create_dir_all(&work_dir)
+        fs::create_dir_all(&work_dir)
             .map_err(|e| AgentdError::Init(format!("mkdir {work_dir}: {e}")))?;
 
         // Assemble overlayfs mount.
         let mount_data = format!("lowerdir={lower_dir},upperdir={upper_dir},workdir={work_dir}");
 
-        mount(
+        mount::mount(
             Some("overlay"),
             "/newroot",
             Some("overlay"),
@@ -258,7 +258,7 @@ mod linux {
     fn pivot_to_newroot() -> AgentdResult<()> {
         let msb_target = "/newroot/.msb";
         mkdir_ignore_exists(msb_target)?;
-        mount(
+        mount::mount(
             Some(microsandbox_protocol::RUNTIME_MOUNT_POINT),
             msb_target,
             None::<&str>,
@@ -267,15 +267,15 @@ mod linux {
         )
         .map_err(|e| AgentdError::Init(format!("failed to bind-mount /.msb into /newroot: {e}")))?;
 
-        chdir("/newroot")
+        unistd::chdir("/newroot")
             .map_err(|e| AgentdError::Init(format!("failed to chdir /newroot: {e}")))?;
 
-        mount(Some("."), "/", None::<&str>, MsFlags::MS_MOVE, None::<&str>)
+        mount::mount(Some("."), "/", None::<&str>, MsFlags::MS_MOVE, None::<&str>)
             .map_err(|e| AgentdError::Init(format!("failed to MS_MOVE /newroot to /: {e}")))?;
 
-        chroot(".").map_err(|e| AgentdError::Init(format!("failed to chroot: {e}")))?;
+        unistd::chroot(".").map_err(|e| AgentdError::Init(format!("failed to chroot: {e}")))?;
 
-        chdir("/")
+        unistd::chdir("/")
             .map_err(|e| AgentdError::Init(format!("failed to chdir / after chroot: {e}")))?;
 
         mount_filesystems()?;
@@ -285,7 +285,7 @@ mod linux {
 
     /// Tries every filesystem type listed in `/proc/filesystems` until one succeeds.
     fn try_mount(device: &str, target: &str) -> AgentdResult<()> {
-        let content = std::fs::read_to_string("/proc/filesystems")
+        let content = fs::read_to_string("/proc/filesystems")
             .map_err(|e| AgentdError::Init(format!("failed to read /proc/filesystems: {e}")))?;
 
         for line in content.lines() {
@@ -299,7 +299,7 @@ mod linux {
                 continue;
             }
 
-            if mount(
+            if mount::mount(
                 Some(device),
                 target,
                 Some(fstype),
@@ -330,7 +330,7 @@ mod linux {
         let path = spec.guest_path.as_str();
 
         // Create the mount point directory.
-        std::fs::create_dir_all(path)
+        fs::create_dir_all(path)
             .map_err(|e| AgentdError::Init(format!("failed to create directory {path}: {e}")))?;
 
         let mut flags = MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_RELATIME;
@@ -338,7 +338,7 @@ mod linux {
             flags |= MsFlags::MS_RDONLY;
         }
 
-        mount(
+        mount::mount(
             Some(spec.tag.as_str()),
             path,
             Some("virtiofs"),
@@ -362,7 +362,7 @@ mod linux {
         }
 
         // Create the staging root directory.
-        std::fs::create_dir_all(microsandbox_protocol::FILE_MOUNTS_DIR).map_err(|e| {
+        fs::create_dir_all(microsandbox_protocol::FILE_MOUNTS_DIR).map_err(|e| {
             AgentdError::Init(format!(
                 "failed to create file mounts dir {}: {e}",
                 microsandbox_protocol::FILE_MOUNTS_DIR
@@ -375,7 +375,7 @@ mod linux {
 
         // Best-effort cleanup of the staging root (succeeds only if all
         // per-tag subdirs were already removed inside mount_file).
-        let _ = std::fs::remove_dir(microsandbox_protocol::FILE_MOUNTS_DIR);
+        let _ = fs::remove_dir(microsandbox_protocol::FILE_MOUNTS_DIR);
 
         Ok(())
     }
@@ -385,7 +385,7 @@ mod linux {
         let staging_path = format!("{}/{}", microsandbox_protocol::FILE_MOUNTS_DIR, spec.tag);
 
         // 1. Create the staging mount point directory.
-        std::fs::create_dir_all(&staging_path).map_err(|e| {
+        fs::create_dir_all(&staging_path).map_err(|e| {
             AgentdError::Init(format!("failed to create staging dir {staging_path}: {e}"))
         })?;
 
@@ -395,7 +395,7 @@ mod linux {
             flags |= MsFlags::MS_RDONLY;
         }
 
-        mount(
+        mount::mount(
             Some(spec.tag.as_str()),
             staging_path.as_str(),
             Some("virtiofs"),
@@ -412,7 +412,7 @@ mod linux {
         // 3. Create parent directories for the guest path.
         let guest = Path::new(&spec.guest_path);
         if let Some(parent) = guest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
+            fs::create_dir_all(parent).map_err(|e| {
                 AgentdError::Init(format!(
                     "failed to create parent dirs for {}: {e}",
                     spec.guest_path
@@ -421,7 +421,7 @@ mod linux {
         }
 
         // 4. Create the target file (touch) as a bind mount target.
-        std::fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
@@ -435,7 +435,7 @@ mod linux {
 
         // 5. Bind mount the file from staging to the guest path.
         let source_path = format!("{staging_path}/{}", spec.filename);
-        mount(
+        mount::mount(
             Some(source_path.as_str()),
             spec.guest_path.as_str(),
             None::<&str>,
@@ -451,7 +451,7 @@ mod linux {
 
         // 6. If read-only, remount the bind mount as read-only.
         if spec.readonly {
-            mount(
+            mount::mount(
                 None::<&str>,
                 spec.guest_path.as_str(),
                 None::<&str>,
@@ -469,8 +469,8 @@ mod linux {
         // 7. Unmount the staging virtiofs share and remove the directory.
         //    The bind mount keeps the file accessible at the guest path;
         //    removing the share prevents alternate-path access.
-        let _ = umount2(staging_path.as_str(), MntFlags::MNT_DETACH);
-        let _ = std::fs::remove_dir(&staging_path);
+        let _ = mount::umount2(staging_path.as_str(), MntFlags::MNT_DETACH);
+        let _ = fs::remove_dir(&staging_path);
 
         Ok(())
     }
@@ -504,7 +504,7 @@ mod linux {
             });
 
         // Create the target directory.
-        std::fs::create_dir_all(path)
+        fs::create_dir_all(path)
             .map_err(|e| AgentdError::Init(format!("failed to create directory {path}: {e}")))?;
 
         // Flags: nosuid + nodev (sensible safety defaults).
@@ -523,7 +523,7 @@ mod linux {
         }
         data.push_str(&format!("mode={mode:o}"));
 
-        mount(
+        mount::mount(
             Some("tmpfs"),
             path,
             Some("tmpfs"),
@@ -544,7 +544,7 @@ mod linux {
     /// Ensure login shells preserve `/.msb/scripts` on PATH.
     pub fn ensure_scripts_path_in_profile() -> AgentdResult<()> {
         let profile_path = Path::new("/etc/profile");
-        let existing = match std::fs::read_to_string(profile_path) {
+        let existing = match fs::read_to_string(profile_path) {
             Ok(contents) => contents,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(err) => {
@@ -558,11 +558,11 @@ mod linux {
         let updated = super::ensure_scripts_profile_block(&existing);
         if updated != existing {
             if let Some(parent) = profile_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|err| {
+                fs::create_dir_all(parent).map_err(|err| {
                     AgentdError::Init(format!("failed to create {}: {err}", parent.display()))
                 })?;
             }
-            std::fs::write(profile_path, updated).map_err(|err| {
+            fs::write(profile_path, updated).map_err(|err| {
                 AgentdError::Init(format!("failed to write {}: {err}", profile_path.display()))
             })?;
         }
@@ -572,7 +572,7 @@ mod linux {
 
     /// Creates a directory, ignoring EEXIST errors.
     fn mkdir_ignore_exists(path: &str) -> AgentdResult<()> {
-        match mkdir(path, Mode::from_bits_truncate(0o755)) {
+        match unistd::mkdir(path, Mode::from_bits_truncate(0o755)) {
             Ok(()) => Ok(()),
             Err(nix::Error::EEXIST) => Ok(()),
             Err(e) => Err(e.into()),
@@ -580,10 +580,10 @@ mod linux {
     }
 
     fn ensure_directory_mode(path: &str, mode: u32) -> AgentdResult<()> {
-        std::fs::create_dir_all(path)
+        fs::create_dir_all(path)
             .map_err(|e| AgentdError::Init(format!("failed to create directory {path}: {e}")))?;
 
-        let metadata = std::fs::metadata(path)
+        let metadata = fs::metadata(path)
             .map_err(|e| AgentdError::Init(format!("failed to stat {path}: {e}")))?;
         if !metadata.is_dir() {
             return Err(AgentdError::Init(format!(
@@ -593,7 +593,7 @@ mod linux {
 
         let current_mode = metadata.permissions().mode() & 0o7777;
         if current_mode != mode {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|e| {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| {
                 AgentdError::Init(format!("failed to chmod {path} to {mode:o}: {e}"))
             })?;
         }
@@ -609,7 +609,7 @@ mod linux {
         flags: MsFlags,
         data: Option<&str>,
     ) -> AgentdResult<()> {
-        match mount(source, target, fstype, flags, data) {
+        match mount::mount(source, target, fstype, flags, data) {
             Ok(()) => Ok(()),
             Err(nix::Error::EBUSY) => Ok(()),
             Err(e) => Err(AgentdError::Init(format!("failed to mount {target}: {e}"))),

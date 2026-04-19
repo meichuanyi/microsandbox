@@ -66,6 +66,9 @@ fn hosts_file_contents(hostname: Option<&str>) -> String {
 
 mod linux {
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::{fs, io, mem, ptr};
+
+    use nix::unistd;
 
     use crate::config::{NetIpv4Spec, NetIpv6Spec, NetSpec};
     use crate::error::{AgentdError, AgentdResult};
@@ -157,7 +160,7 @@ mod linux {
     /// Gets the interface index for a given interface name.
     fn get_ifindex(ifname: &str) -> AgentdResult<u32> {
         unsafe {
-            let mut ifr: libc::ifreq = std::mem::zeroed();
+            let mut ifr: libc::ifreq = mem::zeroed();
             copy_ifname(&mut ifr, ifname)?;
 
             let sock = socket_fd()?;
@@ -165,7 +168,7 @@ mod linux {
                 libc::close(sock);
                 return Err(AgentdError::Init(format!(
                     "SIOCGIFINDEX failed for {ifname}: {}",
-                    std::io::Error::last_os_error()
+                    io::Error::last_os_error()
                 )));
             }
             libc::close(sock);
@@ -177,7 +180,7 @@ mod linux {
     /// Sets the MAC address on an interface.
     fn set_mac_address(ifname: &str, mac: &[u8; 6]) -> AgentdResult<()> {
         unsafe {
-            let mut ifr: libc::ifreq = std::mem::zeroed();
+            let mut ifr: libc::ifreq = mem::zeroed();
             copy_ifname(&mut ifr, ifname)?;
 
             ifr.ifr_ifru.ifru_hwaddr.sa_family = libc::ARPHRD_ETHER;
@@ -188,7 +191,7 @@ mod linux {
                 libc::close(sock);
                 return Err(AgentdError::Init(format!(
                     "SIOCSIFHWADDR failed for {ifname}: {}",
-                    std::io::Error::last_os_error()
+                    io::Error::last_os_error()
                 )));
             }
             libc::close(sock);
@@ -199,7 +202,7 @@ mod linux {
     /// Sets the MTU on an interface.
     fn set_mtu(ifname: &str, mtu: u16) -> AgentdResult<()> {
         unsafe {
-            let mut ifr: libc::ifreq = std::mem::zeroed();
+            let mut ifr: libc::ifreq = mem::zeroed();
             copy_ifname(&mut ifr, ifname)?;
             ifr.ifr_ifru.ifru_mtu = mtu as libc::c_int;
 
@@ -208,7 +211,7 @@ mod linux {
                 libc::close(sock);
                 return Err(AgentdError::Init(format!(
                     "SIOCSIFMTU failed for {ifname}: {}",
-                    std::io::Error::last_os_error()
+                    io::Error::last_os_error()
                 )));
             }
             libc::close(sock);
@@ -219,7 +222,7 @@ mod linux {
     /// Brings an interface up.
     fn bring_interface_up(ifname: &str) -> AgentdResult<()> {
         unsafe {
-            let mut ifr: libc::ifreq = std::mem::zeroed();
+            let mut ifr: libc::ifreq = mem::zeroed();
             copy_ifname(&mut ifr, ifname)?;
 
             let sock = socket_fd()?;
@@ -229,7 +232,7 @@ mod linux {
                 libc::close(sock);
                 return Err(AgentdError::Init(format!(
                     "SIOCGIFFLAGS failed for {ifname}: {}",
-                    std::io::Error::last_os_error()
+                    io::Error::last_os_error()
                 )));
             }
 
@@ -240,7 +243,7 @@ mod linux {
                 libc::close(sock);
                 return Err(AgentdError::Init(format!(
                     "SIOCSIFFLAGS (UP) failed for {ifname}: {}",
-                    std::io::Error::last_os_error()
+                    io::Error::last_os_error()
                 )));
             }
             libc::close(sock);
@@ -318,12 +321,7 @@ mod linux {
     ///
     /// For IPv4: emits both `IFA_ADDRESS` and `IFA_LOCAL` (kernel expects both).
     /// For IPv6: emits only `IFA_ADDRESS` (no `IFA_LOCAL` semantics for IPv6).
-    fn netlink_newaddr(
-        ifindex: u32,
-        family: u8,
-        prefix_len: u8,
-        addr: &[u8],
-    ) -> std::io::Result<()> {
+    fn netlink_newaddr(ifindex: u32, family: u8, prefix_len: u8, addr: &[u8]) -> io::Result<()> {
         let addr_len = addr.len();
         let is_ipv4 = family == libc::AF_INET as u8;
 
@@ -367,7 +365,7 @@ mod linux {
     }
 
     /// Sends a netlink RTM_NEWROUTE message for a default route.
-    fn netlink_newroute(family: u8, gateway: &[u8]) -> std::io::Result<()> {
+    fn netlink_newroute(family: u8, gateway: &[u8]) -> io::Result<()> {
         let gw_len = gateway.len();
 
         // nlmsghdr + rtmsg + RTA_GATEWAY(rta_header + addr)
@@ -408,30 +406,30 @@ mod linux {
     }
 
     /// Opens a netlink socket, sends a message, and waits for the ACK.
-    fn netlink_send(msg: &[u8]) -> std::io::Result<()> {
+    fn netlink_send(msg: &[u8]) -> io::Result<()> {
         unsafe {
             let sock = libc::socket(libc::AF_NETLINK, libc::SOCK_DGRAM, libc::NETLINK_ROUTE);
             if sock < 0 {
-                return Err(std::io::Error::last_os_error());
+                return Err(io::Error::last_os_error());
             }
 
             // Bind to kernel.
-            let mut sa: libc::sockaddr_nl = std::mem::zeroed();
+            let mut sa: libc::sockaddr_nl = mem::zeroed();
             sa.nl_family = libc::AF_NETLINK as u16;
             if libc::bind(
                 sock,
                 (&sa as *const libc::sockaddr_nl).cast(),
-                std::mem::size_of::<libc::sockaddr_nl>() as u32,
+                mem::size_of::<libc::sockaddr_nl>() as u32,
             ) < 0
             {
                 libc::close(sock);
-                return Err(std::io::Error::last_os_error());
+                return Err(io::Error::last_os_error());
             }
 
             // Send.
             if libc::send(sock, msg.as_ptr().cast(), msg.len(), 0) < 0 {
                 libc::close(sock);
-                return Err(std::io::Error::last_os_error());
+                return Err(io::Error::last_os_error());
             }
 
             // Read ACK.
@@ -440,7 +438,7 @@ mod linux {
             libc::close(sock);
 
             if n < 0 {
-                return Err(std::io::Error::last_os_error());
+                return Err(io::Error::last_os_error());
             }
 
             // Check for error in the ACK (using from_ne_bytes to avoid
@@ -452,7 +450,7 @@ mod linux {
                         ack_buf[NLMSG_HDRLEN..NLMSG_HDRLEN + 4].try_into().unwrap(),
                     );
                     if err < 0 {
-                        return Err(std::io::Error::from_raw_os_error(-err));
+                        return Err(io::Error::from_raw_os_error(-err));
                     }
                 }
             }
@@ -465,12 +463,12 @@ mod linux {
 
     /// Sets the kernel hostname via `sethostname()` and writes `/etc/hostname`.
     pub fn set_hostname(name: &str) -> AgentdResult<()> {
-        nix::unistd::sethostname(name)
+        unistd::sethostname(name)
             .map_err(|e| AgentdError::Init(format!("sethostname({name}): {e}")))?;
 
-        std::fs::create_dir_all("/etc")
+        fs::create_dir_all("/etc")
             .map_err(|e| AgentdError::Init(format!("failed to create /etc: {e}")))?;
-        std::fs::write("/etc/hostname", format!("{name}\n"))
+        fs::write("/etc/hostname", format!("{name}\n"))
             .map_err(|e| AgentdError::Init(format!("failed to write /etc/hostname: {e}")))?;
 
         Ok(())
@@ -478,9 +476,9 @@ mod linux {
 
     /// Writes `/etc/hosts` with localhost aliases and an optional hostname entry.
     pub fn write_hosts_file(hostname: Option<&str>) -> AgentdResult<()> {
-        std::fs::create_dir_all("/etc")
+        fs::create_dir_all("/etc")
             .map_err(|e| AgentdError::Init(format!("failed to create /etc: {e}")))?;
-        std::fs::write("/etc/hosts", super::hosts_file_contents(hostname))
+        fs::write("/etc/hosts", super::hosts_file_contents(hostname))
             .map_err(|e| AgentdError::Init(format!("failed to write /etc/hosts: {e}")))?;
         Ok(())
     }
@@ -499,7 +497,7 @@ mod linux {
             content.push_str(&format!("nameserver {dns}\n"));
         }
 
-        std::fs::write("/etc/resolv.conf", &content)
+        fs::write("/etc/resolv.conf", &content)
             .map_err(|e| AgentdError::Init(format!("failed to write /etc/resolv.conf: {e}")))?;
 
         Ok(())
@@ -513,7 +511,7 @@ mod linux {
         if fd < 0 {
             return Err(AgentdError::Init(format!(
                 "failed to create socket: {}",
-                std::io::Error::last_os_error()
+                io::Error::last_os_error()
             )));
         }
         Ok(fd)
@@ -528,7 +526,7 @@ mod linux {
             )));
         }
         unsafe {
-            std::ptr::copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
                 ifr.ifr_name.as_mut_ptr().cast(),
                 bytes.len(),
@@ -545,9 +543,9 @@ mod linux {
     const RTA_HDRLEN: usize = 4;
 
     // Compile-time assertions: catch layout mismatches across platforms.
-    const _: () = assert!(std::mem::size_of::<libc::nlmsghdr>() == NLMSG_HDRLEN);
-    const _: () = assert!(std::mem::size_of::<IfAddrMsg>() == IFADDRMSG_LEN);
-    const _: () = assert!(std::mem::size_of::<RtMsg>() == RTMSG_LEN);
+    const _: () = assert!(mem::size_of::<libc::nlmsghdr>() == NLMSG_HDRLEN);
+    const _: () = assert!(mem::size_of::<IfAddrMsg>() == IFADDRMSG_LEN);
+    const _: () = assert!(mem::size_of::<RtMsg>() == RTMSG_LEN);
 
     fn nlmsg_align(len: usize) -> usize {
         (len + 3) & !3

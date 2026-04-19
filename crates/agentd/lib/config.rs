@@ -5,14 +5,16 @@
 //! functions receive the config by reference, avoiding repeated env var reads
 //! and repeated parsing.
 
+use std::env;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use microsandbox_protocol::{
     ENV_BLOCK_ROOT, ENV_DIR_MOUNTS, ENV_FILE_MOUNTS, ENV_HOSTNAME, ENV_NET, ENV_NET_IPV4,
-    ENV_NET_IPV6, ENV_TMPFS, ENV_USER,
+    ENV_NET_IPV6, ENV_RLIMITS, ENV_TMPFS, ENV_USER, exec::ExecRlimit,
 };
 
 use crate::error::{AgentdError, AgentdResult};
+use crate::rlimit;
 
 //--------------------------------------------------------------------------------------------------
 // Types
@@ -52,6 +54,10 @@ pub struct AgentdConfig {
     ///
     /// Captured at startup; changes to `MSB_USER` afterward are not observed.
     pub(crate) user: Option<String>,
+
+    /// Parsed `MSB_RLIMITS` — sandbox-wide resource limits applied to PID 1
+    /// so every guest process inherits the raised baseline (empty when unset).
+    pub(crate) rlimits: Vec<ExecRlimit>,
 }
 
 /// Parsed tmpfs mount specification.
@@ -167,6 +173,10 @@ impl AgentdConfig {
                 .map(|v| parse_net_ipv6(&v))
                 .transpose()?,
             user: read_env(ENV_USER),
+            rlimits: read_env(ENV_RLIMITS)
+                .map(|v| parse_rlimits(&v))
+                .transpose()?
+                .unwrap_or_default(),
         })
     }
 
@@ -399,6 +409,41 @@ fn parse_tmpfs_entry(entry: &str) -> AgentdResult<TmpfsSpec> {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Parse Functions: Rlimits
+//--------------------------------------------------------------------------------------------------
+
+/// Parses `MSB_RLIMITS` value: semicolon-separated `resource=soft[:hard]` entries.
+///
+/// Rejects unknown resource names and duplicate resources at startup so
+/// misspellings and overrides fail loud rather than silently last-winning
+/// during PID 1 init.
+fn parse_rlimits(val: &str) -> AgentdResult<Vec<ExecRlimit>> {
+    let mut seen: Vec<String> = Vec::new();
+    val.split(';')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let rlimit = entry.parse::<ExecRlimit>().map_err(|err| {
+                AgentdError::Config(format!("{ENV_RLIMITS} entry {entry}: {err}"))
+            })?;
+            if rlimit::parse_rlimit_resource(&rlimit.resource).is_none() {
+                return Err(AgentdError::Config(format!(
+                    "{ENV_RLIMITS} unknown resource: {}",
+                    rlimit.resource
+                )));
+            }
+            if seen.iter().any(|name| name == &rlimit.resource) {
+                return Err(AgentdError::Config(format!(
+                    "{ENV_RLIMITS} duplicate resource: {}",
+                    rlimit.resource
+                )));
+            }
+            seen.push(rlimit.resource.clone());
+            Ok(rlimit)
+        })
+        .collect()
+}
+
+//--------------------------------------------------------------------------------------------------
 // Parse Functions: Network
 //--------------------------------------------------------------------------------------------------
 
@@ -578,7 +623,7 @@ fn parse_cidr_v6(s: &str) -> AgentdResult<(Ipv6Addr, u8)> {
 
 /// Reads a single environment variable, returning `None` for missing or empty values.
 fn read_env(key: &str) -> Option<String> {
-    std::env::var(key)
+    env::var(key)
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -869,5 +914,51 @@ mod tests {
         let (addr, prefix) = parse_cidr_v6("fd42:6d73:62:2a::2/64").unwrap();
         assert_eq!(addr, "fd42:6d73:62:2a::2".parse::<Ipv6Addr>().unwrap());
         assert_eq!(prefix, 64);
+    }
+
+    // ── Rlimits ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_rlimits_happy_path() {
+        let rlimits = parse_rlimits("nofile=65535;nproc=4096:8192").unwrap();
+        assert_eq!(rlimits.len(), 2);
+        assert_eq!(rlimits[0].resource, "nofile");
+        assert_eq!(rlimits[0].soft, 65535);
+        assert_eq!(rlimits[0].hard, 65535);
+        assert_eq!(rlimits[1].resource, "nproc");
+        assert_eq!(rlimits[1].soft, 4096);
+        assert_eq!(rlimits[1].hard, 8192);
+    }
+
+    #[test]
+    fn test_parse_rlimits_ignores_empty_entries() {
+        let rlimits = parse_rlimits("nofile=1024;").unwrap();
+        assert_eq!(rlimits.len(), 1);
+        assert_eq!(rlimits[0].resource, "nofile");
+    }
+
+    #[test]
+    fn test_parse_rlimits_rejects_unknown_resource() {
+        let err = parse_rlimits("bogus=1024").unwrap_err();
+        assert!(
+            matches!(err, AgentdError::Config(msg) if msg.contains("unknown resource: bogus")),
+            "unexpected error shape"
+        );
+    }
+
+    #[test]
+    fn test_parse_rlimits_rejects_duplicate_resource() {
+        let err = parse_rlimits("nofile=1024;nofile=65535").unwrap_err();
+        assert!(
+            matches!(err, AgentdError::Config(msg) if msg.contains("duplicate resource: nofile")),
+            "unexpected error shape"
+        );
+    }
+
+    #[test]
+    fn test_parse_rlimits_rejects_malformed_entry() {
+        assert!(parse_rlimits("nofile").is_err());
+        assert!(parse_rlimits("nofile=abc").is_err());
+        assert!(parse_rlimits("nofile=65535:1024").is_err()); // soft > hard
     }
 }

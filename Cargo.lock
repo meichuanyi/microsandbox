@@ -2611,6 +2611,7 @@ dependencies = [
  "microsandbox",
  "microsandbox-image",
  "microsandbox-network",
+ "microsandbox-protocol",
  "microsandbox-runtime",
  "microsandbox-utils",
  "rand 0.10.1",
