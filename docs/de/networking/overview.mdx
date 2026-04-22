@@ -1,0 +1,405 @@
+---
+title: Netzwerk
+description: Netzwerkzugriff und Isolation steuern
+icon: "network-wired"
+---
+
+Der gesamte Netzwerkverkehr einer Sandbox fließt durch einen vom Host kontrollierten Netzwerk-Stack. Von innen sieht die Sandbox eine normale Netzwerkschnittstelle, aber auf der Host-Seite unterliegt jedes Paket einer Richtlinie, bevor es irgendwohin geht.
+
+Der einzige Weg der Sandbox zur Außenwelt führt durch diesen Stack, sodass blockierter Datenverkehr die VM niemals verlässt.
+
+## Netzwerk-Voreinstellungen
+
+Die einfachste Art, das Netzwerk zu konfigurieren. `public_only` ist die Standardeinstellung.
+
+<CodeGroup>
+```rust Rust
+use microsandbox::NetworkPolicy;
+
+// Nur öffentliches Internet
+let sb = Sandbox::builder("web-agent")
+    .image("python")
+    .network(|n| n.policy(NetworkPolicy::public_only()))
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+import { NetworkPolicy, Sandbox } from 'microsandbox'
+
+// Kein Netzwerkzugriff
+const sb1 = await Sandbox.create({
+    name: "isolated",
+    image: "python",
+    network: NetworkPolicy.none(),
+})
+
+// Nur öffentliches Internet (Standard, blockiert private Bereiche)
+const sb2 = await Sandbox.create({
+    name: "web-agent",
+    image: "python",
+    network: NetworkPolicy.publicOnly(),
+})
+
+// Uneingeschränkter Zugriff
+const sb3 = await Sandbox.create({
+    name: "dev",
+    image: "python",
+    network: NetworkPolicy.allowAll(),
+})
+```
+
+```python Python
+from microsandbox import Network, Sandbox
+
+# Kein Netzwerkzugriff
+sb1 = await Sandbox.create("isolated", image="python", network=Network.none())
+
+# Nur öffentliches Internet (Standard, blockiert private Bereiche)
+sb2 = await Sandbox.create("web-agent", image="python", network=Network.public_only())
+
+# Uneingeschränkter Zugriff
+sb3 = await Sandbox.create("dev", image="python", network=Network.allow_all())
+```
+
+```bash CLI
+# Kein Netzwerkzugriff
+msb create python --name isolated --no-network
+
+# Nur öffentliches Internet (Standard)
+msb create python --name web-agent
+
+# Mit TLS-Interception
+msb create python --name agent --tls-intercept
+```
+
+</CodeGroup>
+
+## Benutzerdefinierte Richtlinien
+
+Erstellen Sie eine Richtlinie mit expliziten Ausgangs- und Eingangsregeln. Regeln werden nach dem Prinzip der ersten Übereinstimmung ausgewertet.
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Sandbox;
+use microsandbox::NetworkPolicy;
+use microsandbox_network::policy::{
+    Action, Destination, DestinationGroup, Direction, PortRange, Protocol, Rule,
+};
+
+let policy = NetworkPolicy {
+    default_action: Action::Deny,
+    rules: vec![
+        Rule {
+            direction: Direction::Outbound,
+            destination: Destination::Any,
+            protocol: Some(Protocol::Tcp),
+            ports: Some(PortRange::single(443)),
+            action: Action::Allow,
+        },
+        Rule {
+            direction: Direction::Outbound,
+            destination: Destination::Any,
+            protocol: Some(Protocol::Udp),
+            ports: Some(PortRange::single(53)),
+            action: Action::Allow,
+        },
+        Rule::deny_outbound(Destination::Group(DestinationGroup::Metadata)),
+        Rule::deny_outbound(Destination::Group(DestinationGroup::Private)),
+    ],
+};
+
+let sb = Sandbox::builder("secure-agent")
+    .image("alpine")
+    .network(|n| n.policy(policy))
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+import { Sandbox } from 'microsandbox'
+
+const sb = await Sandbox.create({
+    name: "secure-agent",
+    image: "alpine",
+    network: {
+        rules: [
+            { action: "allow", direction: "outbound", protocol: "tcp", port: "443" },
+            { action: "allow", direction: "outbound", protocol: "udp", port: "53" },
+            { action: "deny", direction: "outbound", destination: "metadata" },
+            { action: "deny", direction: "outbound", destination: "private" },
+        ],
+        defaultAction: "deny",
+    },
+})
+```
+
+```python Python
+from microsandbox import Action, Network, NetworkPolicy, Protocol, Rule, Sandbox
+
+sb = await Sandbox.create(
+    "secure-agent",
+    image="alpine",
+    network=Network(
+        policy=NetworkPolicy(
+            default_action=Action.DENY,
+            rules=(
+                Rule.allow(protocol=Protocol.TCP, port=443),
+                Rule.allow(protocol=Protocol.UDP, port=53),
+                Rule.deny(destination="metadata"),
+                Rule.deny(destination="private"),
+            ),
+        ),
+    ),
+)
+```
+
+</CodeGroup>
+
+## Port-Mapping
+
+Stellen Sie Ports der Sandbox dem Host zur Verfügung, damit Dienste, die in der VM laufen, von Ihrem Rechner aus erreichbar sind.
+
+In Rust sind `SandboxBuilder::port()` und `port_udp()` Abkürzungen auf oberster Ebene, sodass Sie Ports veröffentlichen können, ohne alles in `.network(...)` zu verschachteln.
+
+<CodeGroup>
+```rust Rust
+let sb = Sandbox::builder("api")
+    .image("python")
+    .port(8080, 80)
+    .port_udp(5353, 5353)
+    .network(|n| n.policy(NetworkPolicy::public_only()))
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+const sb = await Sandbox.create({
+    name: "api",
+    image: "python",
+    ports: { "8080": 80 },
+    network: NetworkPolicy.publicOnly(),
+})
+```
+
+```python Python
+sb = await Sandbox.create(
+    "api",
+    image="python",
+    ports={8080: 80},
+)
+```
+
+```bash CLI
+msb create python --name api -p 8080:80
+```
+
+</CodeGroup>
+
+## DNS-Interception
+
+DNS-Anfragen des Gastes werden abgefangen und auf der Host-Seite aufgelöst, was einige nützliche Steuerungsmöglichkeiten eröffnet:
+
+- **Domain-Blockierung** durch exakte Übereinstimmung oder Suffix (z.B. `*.tracking.com`).
+- **Rebinding-Schutz**: Wenn eine DNS-Antwort auf eine private IP auflöst (`10.x`, `172.16.x`, `192.168.x`, `127.x`, Link-Local), wird die Anfrage blockiert. Dies verhindert den Trick, bei dem ein Angreifer eine öffentliche Domain registriert, die auf einen internen Dienst zeigt.
+- **DNS-zu-IP-Bindung**: Wenn Secrets konfiguriert sind, können Domains an die IPs gebunden werden, zu denen sie aufgelöst wurden, um TOCTOU-Angriffe zu verhindern, bei denen sich der DNS zwischen der Richtlinienprüfung und der tatsächlichen Verbindung ändert.
+
+<CodeGroup>
+```rust Rust
+let sb = Sandbox::builder("safe-agent")
+    .image("python")
+    .network(|n| n
+        .policy(NetworkPolicy::public_only())
+        .dns(|d| d
+            .block_domain("malware.example.com")
+            .block_domain_suffix(".tracking.com")
+        )
+    )
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+const sb = await Sandbox.create({
+    name: "safe-agent",
+    image: "python",
+    network: {
+        ...NetworkPolicy.publicOnly(),
+        dns: {
+            blockDomains: ["malware.example.com"],
+            blockDomainSuffixes: [".tracking.com"],
+        },
+    },
+})
+```
+
+```python Python
+from microsandbox import DnsConfig, Network, Sandbox
+
+sb = await Sandbox.create(
+    "safe-agent",
+    image="python",
+    network=Network(
+        dns=DnsConfig(
+            block_domains=("malware.example.com",),
+            block_domain_suffixes=(".tracking.com",),
+        ),
+    ),
+)
+```
+
+```bash CLI
+msb create python --name safe-agent \
+  --dns-block-domain malware.example.com \
+  --dns-block-suffix .tracking.com
+```
+
+</CodeGroup>
+
+### DNS-Nameserver festlegen
+
+Standardmäßig leitet die Sandbox DNS-Anfragen an die Nameserver weiter, die in der `/etc/resolv.conf` des Hosts aufgelistet sind. Überschreiben Sie dies mit `nameservers`, um bestimmte Resolver festzulegen (z.B. `1.1.1.1`, `dns.google`) oder um Split-DNS-Konfigurationen bei VPNs zu umgehen, bei denen `/etc/resolv.conf` nicht die tatsächliche Resolver-Tabelle widerspiegelt. Akzeptiert IPs, `IP:PORT`, Hostnamen und `HOST:PORT` — Hostnamen werden einmalig beim Start über den Betriebssystem-Resolver des Hosts aufgelöst.
+
+<CodeGroup>
+
+```rust Rust
+use microsandbox_network::dns::Nameserver;
+
+let sb = Sandbox::builder("safe-agent")
+    .image("python")
+    .network(|n| n
+        .dns(|d| d
+            .nameservers([
+                "1.1.1.1".parse::<Nameserver>()?,
+                "1.0.0.1".parse::<Nameserver>()?,
+            ])
+            .query_timeout_ms(3000)
+        )
+    )
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+const sb = await Sandbox.create("safe-agent", {
+    image: "python",
+    network: {
+        dns: {
+            nameservers: ["1.1.1.1", "1.0.0.1"],
+            queryTimeoutMs: 3000,
+        },
+    },
+})
+```
+
+```python Python
+sb = await Sandbox.create(
+    "safe-agent",
+    image="python",
+    network=Network(
+        dns=DnsConfig(
+            nameservers=("1.1.1.1", "1.0.0.1"),
+            query_timeout_ms=3000,
+        ),
+    ),
+)
+```
+
+```bash CLI
+msb create python --name safe-agent \
+  --dns-nameserver 1.1.1.1 \
+  --dns-nameserver 1.0.0.1 \
+  --dns-query-timeout-ms 3000
+```
+
+</CodeGroup>
+
+### DNS über alternative Transportwege
+
+Die Blockierliste und der Rebinding-Schutz gelten nur für Anfragen, die das Gateway sehen kann. Ein Gast, der DNS über ein verschlüsseltes oder Nicht-DNS-Protokoll routet, umgeht beides, es sei denn, das Gateway fängt sie ab oder lehnt sie ab.
+
+**Abgefangen** — Blockierliste + Rebinding + Upstream-Auswahl pro Anfrage gelten:
+- DNS über UDP (UDP/53)
+- DNS über TCP (TCP/53)
+- DNS über TLS (DoT, TCP/853) — erfordert [TLS-Interception](/networking/tls)
+
+**Abgelehnt** — der Stub des Gastes fällt auf Plain-DNS zurück:
+- DNS über QUIC (DoQ, UDP/853)
+- mDNS (UDP/5353), LLMNR (UDP/5355), NetBIOS-NS (UDP/137)
+
+**Nicht vom regulären Datenverkehr unterscheidbar** — der Betreiber muss über die Netzwerkrichtlinie filtern:
+- DNS über HTTPS (DoH, TCP/443)
+
+Für strenge DNS-Integrität kombinieren Sie DoT-Interception mit einer Netzwerkrichtlinie, die ausgehenden Datenverkehr über `UDP/53`, `TCP/53` und `TCP/853` zu allem außer dem Gateway verweigert.
+
+## Host-CAs vertrauen
+
+Unternehmens-TLS-Inspektionsproxys (Cloudflare Warp Zero Trust, Zscaler, Netskope, Palo Alto, ...) terminieren ausgehendes HTTPS am Host und signieren es mit einer Gateway-CA neu. Diese CA wird als Teil der Unternehmensbereitstellung im macOS-Schlüsselbund oder im Linux-Vertrauensspeicher installiert, sodass HTTPS auf dem Host unbemerkt funktioniert. Innerhalb einer Sandbox funktioniert es nicht: Das Standard-Mozilla-Bundle des Gastes hat die Gateway-CA nie gesehen, daher schlagen `apk update`, `pip install`, `curl` und jede SDK-Anfrage mit `server certificate not trusted` fehl.
+
+Standardmäßig erweitert die Sandbox das Vertrauen des Hosts nicht auf den Gast, sodass der Gast TLS strikt gegen sein Standard-Mozilla-Bundle validiert. Aktivieren Sie es, wenn Sie möchten, dass der Gast dem vertraut, was der Host vertraut: Beim Start der Sandbox werden die vertrauenswürdigen Root-CAs des Hosts in den Gast kopiert und an das System-CA-Bundle angehängt.
+
+<Note>
+**Sicherheit:** Dies erweitert das Vertrauen des Gastes auf alles, dem der Host vertraut. Das ist der Zweck für MITM-Proxy-Umgebungen, aber es bedeutet auch, dass ein Angreifer, der eine CA auf dem Host installieren kann, dieses Vertrauen jetzt in jeder Sandbox hat. Es entspricht dem bestehenden Bedrohungsmodell (ein Angreifer mit Host-Zugriff kontrolliert bereits die Sandbox), aber es ist wichtig, dies zu wissen, bevor Sie es auf einem Host mit einem unbekannten Vertrauensspeicher aktivieren.
+</Note>
+
+<CodeGroup>
+
+```rust Rust
+let sb = Sandbox::builder("agent")
+    .image("alpine")
+    .network(|n| n.trust_host_cas(true))
+    .build()?;
+```
+
+```typescript TypeScript
+const sb = await Sandbox.create({
+  name: "agent",
+  image: "alpine",
+  network: { trustHostCas: true },
+});
+```
+
+```python Python
+sb = await Sandbox.create(
+    "agent",
+    image="alpine",
+    network=Network(trust_host_cas=True),
+)
+```
+
+```bash CLI
+msb run alpine --trust-host-cas -- apk update
+```
+
+</CodeGroup>
+
+### Mit aktivierter TLS-Interception
+
+Microsandbox bietet auch eine optionale [TLS-Interception](/networking/tls)-Funktion. Wenn sie für einen Port aktiviert ist, terminiert sie das TLS des Gastes an einem hostseitigen Proxy, validiert das Upstream-Zertifikat gegen den Vertrauensspeicher des Hosts (die Gateway-CA des Unternehmens ist dort bereits vorhanden) und signiert mit einer CA neu, der der Gast bereits vertraut. Für diesen Port behandelt die TLS-Interception den Fall des Unternehmensproxys eigenständig.
+
+Aber die Interception hat einen definierten Geltungsbereich. Sie gilt nur für `intercepted_ports` (Standard `[443]`), respektiert `bypass`-Domains und berührt keine QUIC / HTTP/3-Flüsse. Alles außerhalb dieses Geltungsbereichs (gRPC, Postgres / Redis / Mongo TLS, benutzerdefinierter Port 8443, nicht abgefangene Ports, ausgenommene Domains) geht über rohes TLS vom Gast, wobei das Vertrauen in die Host-CAs die Zertifikatsvalidierung erfolgreich macht.
+
+Die beiden Funktionen ergänzen sich. Aktivieren Sie `trust_host_cas` zusammen mit TLS-Interception, wenn Sie beides benötigen: Die Interception bietet eine umfassendere Inspektion auf den Ports, die sie abdeckt, das Vertrauen in Host-CAs deckt alles andere ab. Lassen Sie es deaktiviert, damit der TLS-Stack des Gastes strikt gegen sein Standard-Mozilla-Bundle validiert.
+
+## Funktionsweise
+
+Richtlinienregeln werden nach dem Prinzip der ersten Übereinstimmung ausgewertet. Erlaubter Datenverkehr geht an das reale Netzwerk; alles andere wird verworfen.
+
+- **`none`**: überhaupt keine Netzwerkschnittstelle. Der Gast ist vollständig offline, obwohl `exec` und `fs` weiterhin funktionieren, da sie das Netzwerk nicht nutzen.
+- **`public_only`**: blockiert private Bereiche (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`) und erlaubt nur routbare öffentliche Adressen. Dies ist die Standardeinstellung.
+- **`allow_all`**: kein Filtern, einschließlich Zugriff auf den Host-Rechner und das lokale Netzwerk.
+- **`allowlist`** / **`denylist`** (demnächst verfügbar): granulare Kontrolle pro Host.
+
+## Protokollunterstützung
+
+Für die meisten Sandbox-Workloads verhält sich das Netzwerk wie erwartet:
+
+- Normaler ausgehender **TCP**- und **UDP**-Datenverkehr funktioniert, einschließlich gängiger Tools und Bibliotheken wie `curl`, `wget`, Paketmanager, HTTP-Clients, Datenbanktreiber und DNS-Abfragen.
+- **DNS** wird auf der Host-Seite abgefangen, was Domain-Blockierung, Rebinding-Schutz und Secret-basierte Richtlinienprüfungen ermöglicht.
+- **ICMP Echo** wird unterstützt: Das Pingen externer Hosts funktioniert auf Systemen, die unprivilegierte ICMP-Echo-Sockets unterstützen.
+
+<Note>
+**Raw-Sockets** und **vollständige ICMP-Weiterleitung** werden nicht unterstützt, da sie erhöhte Berechtigungen auf dem Host erfordern. Tools, die auf ein umfangreicheres ICMP-Verhalten angewiesen sind, wie `traceroute`, liegen außerhalb des aktuellen Geltungsbereichs.
+</Note>
+
+In der Praxis sind Webanfragen, APIs, Paketinstallationen, Service-zu-Service-Aufrufe und veröffentlichte Ports der primäre Anwendungsfall, und diese funktionieren unabhängig von diesen ICMP-Einschränkungen.

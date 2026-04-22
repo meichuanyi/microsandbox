@@ -1,0 +1,405 @@
+---
+title: ネットワーク
+description: ネットワークアクセスと分離の制御
+icon: "network-wired"
+---
+
+サンドボックスからのすべてのネットワークトラフィックは、ホスト制御のネットワークスタックを通過します。内部からはサンドボックスは通常のネットワークインターフェースに見えますが、ホスト側ではすべてのパケットがどこかに行く前にポリシーの適用を受けます。
+
+サンドボックスの外部世界への唯一の経路はこのスタックを通じてであるため、ブロックされたトラフィックはVMを離れることはありません。
+
+## ネットワークプリセット
+
+ネットワークを構成する最もシンプルな方法です。`public_only`がデフォルトです。
+
+<CodeGroup>
+```rust Rust
+use microsandbox::NetworkPolicy;
+
+// パブリックインターネットのみ
+let sb = Sandbox::builder("web-agent")
+    .image("python")
+    .network(|n| n.policy(NetworkPolicy::public_only()))
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+import { NetworkPolicy, Sandbox } from 'microsandbox'
+
+// ネットワークアクセスなし
+const sb1 = await Sandbox.create({
+    name: "isolated",
+    image: "python",
+    network: NetworkPolicy.none(),
+})
+
+// パブリックインターネットのみ（デフォルト、プライベート範囲をブロック）
+const sb2 = await Sandbox.create({
+    name: "web-agent",
+    image: "python",
+    network: NetworkPolicy.publicOnly(),
+})
+
+// 無制限アクセス
+const sb3 = await Sandbox.create({
+    name: "dev",
+    image: "python",
+    network: NetworkPolicy.allowAll(),
+})
+```
+
+```python Python
+from microsandbox import Network, Sandbox
+
+# ネットワークアクセスなし
+sb1 = await Sandbox.create("isolated", image="python", network=Network.none())
+
+# パブリックインターネットのみ（デフォルト、プライベート範囲をブロック）
+sb2 = await Sandbox.create("web-agent", image="python", network=Network.public_only())
+
+# 無制限アクセス
+sb3 = await Sandbox.create("dev", image="python", network=Network.allow_all())
+```
+
+```bash CLI
+# ネットワークアクセスなし
+msb create python --name isolated --no-network
+
+# パブリックインターネットのみ（デフォルト）
+msb create python --name web-agent
+
+# TLSインターセプション付き
+msb create python --name agent --tls-intercept
+```
+
+</CodeGroup>
+
+## カスタムポリシー
+
+明示的なエグレスルールとイングレスルールでポリシーを構築します。ルールは最初に一致したものが優先されます。
+
+<CodeGroup>
+```rust Rust
+use microsandbox::Sandbox;
+use microsandbox::NetworkPolicy;
+use microsandbox_network::policy::{
+    Action, Destination, DestinationGroup, Direction, PortRange, Protocol, Rule,
+};
+
+let policy = NetworkPolicy {
+    default_action: Action::Deny,
+    rules: vec![
+        Rule {
+            direction: Direction::Outbound,
+            destination: Destination::Any,
+            protocol: Some(Protocol::Tcp),
+            ports: Some(PortRange::single(443)),
+            action: Action::Allow,
+        },
+        Rule {
+            direction: Direction::Outbound,
+            destination: Destination::Any,
+            protocol: Some(Protocol::Udp),
+            ports: Some(PortRange::single(53)),
+            action: Action::Allow,
+        },
+        Rule::deny_outbound(Destination::Group(DestinationGroup::Metadata)),
+        Rule::deny_outbound(Destination::Group(DestinationGroup::Private)),
+    ],
+};
+
+let sb = Sandbox::builder("secure-agent")
+    .image("alpine")
+    .network(|n| n.policy(policy))
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+import { Sandbox } from 'microsandbox'
+
+const sb = await Sandbox.create({
+    name: "secure-agent",
+    image: "alpine",
+    network: {
+        rules: [
+            { action: "allow", direction: "outbound", protocol: "tcp", port: "443" },
+            { action: "allow", direction: "outbound", protocol: "udp", port: "53" },
+            { action: "deny", direction: "outbound", destination: "metadata" },
+            { action: "deny", direction: "outbound", destination: "private" },
+        ],
+        defaultAction: "deny",
+    },
+})
+```
+
+```python Python
+from microsandbox import Action, Network, NetworkPolicy, Protocol, Rule, Sandbox
+
+sb = await Sandbox.create(
+    "secure-agent",
+    image="alpine",
+    network=Network(
+        policy=NetworkPolicy(
+            default_action=Action.DENY,
+            rules=(
+                Rule.allow(protocol=Protocol.TCP, port=443),
+                Rule.allow(protocol=Protocol.UDP, port=53),
+                Rule.deny(destination="metadata"),
+                Rule.deny(destination="private"),
+            ),
+        ),
+    ),
+)
+```
+
+</CodeGroup>
+
+## ポートマッピング
+
+サンドボックスのポートをホストに公開して、VM内で実行されているサービスをマシンからアクセスできるようにします。
+
+Rustでは、`SandboxBuilder::port()`と`port_udp()`はトップレベルのショートカットであるため、すべてを`.network(...)`内にネストせずにポートを公開できます。
+
+<CodeGroup>
+```rust Rust
+let sb = Sandbox::builder("api")
+    .image("python")
+    .port(8080, 80)
+    .port_udp(5353, 5353)
+    .network(|n| n.policy(NetworkPolicy::public_only()))
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+const sb = await Sandbox.create({
+    name: "api",
+    image: "python",
+    ports: { "8080": 80 },
+    network: NetworkPolicy.publicOnly(),
+})
+```
+
+```python Python
+sb = await Sandbox.create(
+    "api",
+    image="python",
+    ports={8080: 80},
+)
+```
+
+```bash CLI
+msb create python --name api -p 8080:80
+```
+
+</CodeGroup>
+
+## DNSインターセプション
+
+ゲストからのDNSクエリはホスト側でインターセプトされ解決されます。これにより、いくつかの便利な制御が可能になります：
+
+- **ドメインブロッキング** 完全一致またはサフィックス（例: `*.tracking.com`）によるブロック。
+- **リバインディング保護**: DNS応答がプライベートIP（`10.x`、`172.16.x`、`192.168.x`、`127.x`、リンクローカル）に解決された場合、クエリがブロックされます。これは攻撃者が内部サービスを指すパブリックドメインを登録するトリックを防ぎます。
+- **DNS-IPバインディング**: シークレットが構成されている場合、ドメインを解決先のIPに固定でき、ポリシーチェックと実際の接続の間にDNSが変更されるTOCTOU攻撃を防ぎます。
+
+<CodeGroup>
+```rust Rust
+let sb = Sandbox::builder("safe-agent")
+    .image("python")
+    .network(|n| n
+        .policy(NetworkPolicy::public_only())
+        .dns(|d| d
+            .block_domain("malware.example.com")
+            .block_domain_suffix(".tracking.com")
+        )
+    )
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+const sb = await Sandbox.create({
+    name: "safe-agent",
+    image: "python",
+    network: {
+        ...NetworkPolicy.publicOnly(),
+        dns: {
+            blockDomains: ["malware.example.com"],
+            blockDomainSuffixes: [".tracking.com"],
+        },
+    },
+})
+```
+
+```python Python
+from microsandbox import DnsConfig, Network, Sandbox
+
+sb = await Sandbox.create(
+    "safe-agent",
+    image="python",
+    network=Network(
+        dns=DnsConfig(
+            block_domains=("malware.example.com",),
+            block_domain_suffixes=(".tracking.com",),
+        ),
+    ),
+)
+```
+
+```bash CLI
+msb create python --name safe-agent \
+  --dns-block-domain malware.example.com \
+  --dns-block-suffix .tracking.com
+```
+
+</CodeGroup>
+
+### DNSネームサーバーの固定
+
+デフォルトでは、サンドボックスはホストの`/etc/resolv.conf`にリストされているネームサーバーにDNSクエリを転送します。`nameservers`でこれを上書きして、特定のリゾルバー（例: `1.1.1.1`、`dns.google`）を固定したり、`/etc/resolv.conf`が実際のリゾルバーテーブルを反映しないVPNでのスプリットDNS設定を回避したりできます。IP、`IP:PORT`、ホスト名、`HOST:PORT`を受け入れます。ホスト名は起動時にホストのOSリゾルバーを介して一度だけ解決されます。
+
+<CodeGroup>
+
+```rust Rust
+use microsandbox_network::dns::Nameserver;
+
+let sb = Sandbox::builder("safe-agent")
+    .image("python")
+    .network(|n| n
+        .dns(|d| d
+            .nameservers([
+                "1.1.1.1".parse::<Nameserver>()?,
+                "1.0.0.1".parse::<Nameserver>()?,
+            ])
+            .query_timeout_ms(3000)
+        )
+    )
+    .create()
+    .await?;
+```
+
+```typescript TypeScript
+const sb = await Sandbox.create("safe-agent", {
+    image: "python",
+    network: {
+        dns: {
+            nameservers: ["1.1.1.1", "1.0.0.1"],
+            queryTimeoutMs: 3000,
+        },
+    },
+})
+```
+
+```python Python
+sb = await Sandbox.create(
+    "safe-agent",
+    image="python",
+    network=Network(
+        dns=DnsConfig(
+            nameservers=("1.1.1.1", "1.0.0.1"),
+            query_timeout_ms=3000,
+        ),
+    ),
+)
+```
+
+```bash CLI
+msb create python --name safe-agent \
+  --dns-nameserver 1.1.1.1 \
+  --dns-nameserver 1.0.0.1 \
+  --dns-query-timeout-ms 3000
+```
+
+</CodeGroup>
+
+### 代替トランスポートによるDNS
+
+ブロックリストとリバインディング保護は、ゲートウェイが確認できるクエリにのみ適用されます。暗号化されたプロトコルや非DNSプロトコルを通じてDNSをルーティングするゲストは、ゲートウェイがインターセプトまたは拒否しない限り、両方をバイパスします。
+
+**インターセプト済み** — ブロックリスト + リバインディング + クエリごとのアップストリーム選択が適用：
+- DNS over UDP (UDP/53)
+- DNS over TCP (TCP/53)
+- DNS over TLS (DoT, TCP/853) — [TLSインターセプション](/networking/tls)が必要
+
+**拒否済み** — ゲストのスタブがプレーンDNSにフォールバック：
+- DNS over QUIC (DoQ, UDP/853)
+- mDNS (UDP/5353)、LLMNR (UDP/5355)、NetBIOS-NS (UDP/137)
+
+**通常のトラフィックと区別不可** — オペレーターがネットワークポリシーでフィルタリングする必要あり：
+- DNS over HTTPS (DoH, TCP/443)
+
+厳密なDNSの整合性のためには、DoTインターセプションとゲートウェイ以外への送信`UDP/53`、`TCP/53`、`TCP/853`を拒否するネットワークポリシーを組み合わせてください。
+
+## ホストCAの信頼
+
+企業のTLS検査プロキシ（Cloudflare Warp Zero Trust、Zscaler、Netskope、Palo Alto、...）はホストで送信HTTPSを終端し、ゲートウェイCAで再署名します。このCAは企業展開の一部としてmacOSキーチェーンまたはLinuxトラストストアにインストールされるため、HTTPSはホスト上でサイレントに動作します。サンドボックス内ではそうではありません：ゲストの標準MozillaバンドルはゲートウェイCAを見たことがないため、`apk update`、`pip install`、`curl`、およびSDKリクエストは`server certificate not trusted`で失敗します。
+
+デフォルトでは、サンドボックスはホストの信頼をゲストに拡張しないため、ゲストは標準Mozillaバンドルに対してTLSを厳密に検証します。ゲストがホストの信頼するものを信頼する必要がある場合にオプトインしてください：サンドボックスの起動時に、ホストの信頼されたルートCAがゲストにコピーされ、システムCAバンドルに追加されます。
+
+<Note>
+**セキュリティ:** これにより、ゲストの信頼がホストの信頼するすべてのものに拡張されます。これはMITMプロキシ環境のための目的ですが、ホストにCAをインストールできる攻撃者がすべてのサンドボックス内でその信頼を持つことも意味します。既存の脅威モデル（ホストアクセスを持つ攻撃者はすでにサンドボックスを制御している）と一致しますが、不明なトラストストアを持つホストで有効にする前に知っておくべきことです。
+</Note>
+
+<CodeGroup>
+
+```rust Rust
+let sb = Sandbox::builder("agent")
+    .image("alpine")
+    .network(|n| n.trust_host_cas(true))
+    .build()?;
+```
+
+```typescript TypeScript
+const sb = await Sandbox.create({
+  name: "agent",
+  image: "alpine",
+  network: { trustHostCas: true },
+});
+```
+
+```python Python
+sb = await Sandbox.create(
+    "agent",
+    image="alpine",
+    network=Network(trust_host_cas=True),
+)
+```
+
+```bash CLI
+msb run alpine --trust-host-cas -- apk update
+```
+
+</CodeGroup>
+
+### TLSインターセプション有効時
+
+Microsandboxにはオプションの[TLSインターセプション](/networking/tls)機能も搭載されています。ポートで有効にすると、ホスト側のプロキシでゲストのTLSを終端し、ホストのトラストストア（企業のゲートウェイCAはすでにそこにあります）に対してアップストリーム証明書を検証し、ゲストがすでに信頼しているCAで再署名します。そのポートでは、TLSインターセプションが企業プロキシのケースを単独で処理します。
+
+ただし、インターセプションにはスコープがあります。`intercepted_ports`（デフォルト`[443]`）にのみ適用され、`bypass`ドメインを尊重し、QUIC / HTTP/3フローには影響しません。そのスコープ外のすべて（gRPC、Postgres / Redis / Mongo TLS、カスタム8443、インターセプトされていないポート、バイパスされたドメイン）は、ゲストからの生のTLSを経由し、ホストCAの信頼が証明書の検証を成功させるものです。
+
+2つの機能は補完し合います。両方が必要な場合はTLSインターセプションと一緒に`trust_host_cas`を有効にしてください：インターセプションはカバーするポートでより詳細な検査を提供し、ホストCAの信頼はそれ以外のすべてをカバーします。ゲストのTLSスタックが標準Mozillaバンドルに対して厳密に検証するようにするには、無効のままにしてください。
+
+## 仕組み
+
+ポリシールールは最初に一致したものが優先されます。許可されたトラフィックは実際のネットワークに送られ、それ以外はすべて破棄されます。
+
+- **`none`**: ネットワークインターフェースなし。ゲストは完全にオフラインですが、`exec`と`fs`はネットワークを使用しないため引き続き動作します。
+- **`public_only`**: プライベート範囲（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`127.0.0.0/8`、`169.254.0.0/16`）をブロックし、ルーティング可能なパブリックアドレスのみを許可します。これがデフォルトです。
+- **`allow_all`**: フィルタリングなし、ホストマシンとローカルネットワークへのアクセスを含みます。
+- **`allowlist`** / **`denylist`**（近日公開）: ホストごとのきめ細かい制御。
+
+## プロトコルサポート
+
+ほとんどのサンドボックスワークロードでは、ネットワークは期待通りに動作します：
+
+- 通常の送信**TCP**および**UDP**トラフィックは動作します。`curl`、`wget`、パッケージマネージャー、HTTPクライアント、データベースドライバー、DNSルックアップなどの一般的なツールやライブラリを含みます。
+- **DNS**はホスト側でインターセプトされ、ドメインブロッキング、リバインディング保護、シークレットベースのポリシーチェックを可能にします。
+- **ICMPエコー**がサポートされています：非特権ICMPエコーソケットをサポートするシステムで外部ホストへのpingが動作します。
+
+<Note>
+**Rawソケット**および**完全なICMP転送**は、ホストで昇格された権限を必要とするためサポートされていません。`traceroute`のような、より高度なICMP動作に依存するツールは現在のスコープ外です。
+</Note>
+
+実際には、Webリクエスト、API、パッケージインストール、サービス間呼び出し、公開ポートが主なユースケースであり、これらはICMPの制限に関係なく動作します。
