@@ -239,6 +239,7 @@ impl SandboxConfig {
         self.mounts.push(VolumeMount::Tmpfs {
             guest: DEFAULT_OCI_TMPFS_PATH.to_string(),
             size_mib: Some(default_oci_tmpfs_size_mib(self.memory_mib)),
+            readonly: false,
         });
     }
 }
@@ -289,7 +290,8 @@ fn guest_mount_is(mount: &VolumeMount, path: &str) -> bool {
     match mount {
         VolumeMount::Bind { guest, .. }
         | VolumeMount::Named { guest, .. }
-        | VolumeMount::Tmpfs { guest, .. } => {
+        | VolumeMount::Tmpfs { guest, .. }
+        | VolumeMount::DiskImage { guest, .. } => {
             normalized_guest_path(guest) == normalized_guest_path(path)
         }
     }
@@ -530,9 +532,14 @@ mod tests {
 
         assert_eq!(config.mounts.len(), 1);
         match &config.mounts[0] {
-            VolumeMount::Tmpfs { guest, size_mib } => {
+            VolumeMount::Tmpfs {
+                guest,
+                size_mib,
+                readonly,
+            } => {
                 assert_eq!(guest, "/tmp");
                 assert_eq!(*size_mib, Some(512));
+                assert!(!*readonly);
             }
             mount => panic!("expected tmpfs mount, got {mount:?}"),
         }
